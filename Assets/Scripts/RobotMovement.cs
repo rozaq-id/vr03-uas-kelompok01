@@ -12,4 +12,10 @@ public class RobotMovement : MonoBehaviour
 
         transform.Translate(move * speed * Time.deltaTime, Space.World);
     }
+
+    public bool IsMoving()
+    {
+        return Input.GetAxisRaw("Horizontal") != 0 || Input.GetAxisRaw("Vertical") != 0;
+    }
+
 }
