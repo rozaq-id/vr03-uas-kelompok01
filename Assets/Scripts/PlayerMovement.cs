@@ -1,91 +1,51 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
+using TMPro;
 
-public class PlayerMovement : MonoBehaviour
+public class BatterySystem : MonoBehaviour
 {
-    [Header("Movement Settings")]
-    public float moveSpeed = 5f;
-    public float jumpForce = 10f;
-    public float mouseSensitivity = 2f;
-    
-    [Header("Ground Check")]
-    public Transform groundCheck;
-    public float groundDistance = 0.4f;
-    public LayerMask groundMask;
-    
-    private CharacterController controller;
-    private Vector3 velocity;
-    private bool isGrounded;
-    private float xRotation = 0f;
-    
+    [Header("Battery Settings")]
+    public float maxBattery = 100f;
+    public float currentBattery;
+    public float batteryDrainPerSecond = 2f;
+
+    [Header("UI")]
+    public TMP_Text batteryText;
+
+    private RobotMovement robot; // referensi ke script gerakan
+
     void Start()
     {
-        controller = GetComponent<CharacterController>();
-        
-        // Lock cursor to center of screen
-        Cursor.lockState = CursorLockMode.Locked;
-        
-        // Create ground check if it doesn't exist
-        if (groundCheck == null)
-        {
-            GameObject groundCheckObj = new GameObject("GroundCheck");
-            groundCheckObj.transform.parent = transform;
-            groundCheckObj.transform.localPosition = new Vector3(0, -1f, 0);
-            groundCheck = groundCheckObj.transform;
-        }
+        currentBattery = maxBattery;
+        robot = GetComponent<RobotMovement>();
     }
-    
+
     void Update()
     {
-        // Mouse look
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity * Time.deltaTime;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity * Time.deltaTime;
-        
-        xRotation -= mouseY;
-        xRotation = Mathf.Clamp(xRotation, -90f, 90f);
-        
-        Camera.main.transform.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
-        transform.Rotate(Vector3.up * mouseX);
-        
-        // Ground check
-        isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundMask);
-        
-        if (isGrounded && velocity.y < 0)
+        if (robot != null && robot.IsMoving())
         {
-            velocity.y = -2f;
+            currentBattery -= batteryDrainPerSecond * Time.deltaTime;
+            currentBattery = Mathf.Clamp(currentBattery, 0f, maxBattery);
         }
-        
-        // Movement
-        float x = Input.GetAxis("Horizontal");
-        float z = Input.GetAxis("Vertical");
-        
-        Vector3 move = transform.right * x + transform.forward * z;
-        controller.Move(move * moveSpeed * Time.deltaTime);
-        
-        // Jump
-        if (Input.GetButtonDown("Jump") && isGrounded)
+
+        UpdateUI();
+    }
+
+    void UpdateUI()
+    {
+        if (batteryText != null)
         {
-            velocity.y = Mathf.Sqrt(jumpForce * -2f * Physics.gravity.y);
-        }
-        
-        // Apply gravity
-        velocity.y += Physics.gravity.y * Time.deltaTime;
-        controller.Move(velocity * Time.deltaTime);
-        
-        // Unlock cursor with Escape key
-        if (Input.GetKeyDown(KeyCode.Escape))
-        {
-            Cursor.lockState = CursorLockMode.None;
+            batteryText.text = "Battery: " + Mathf.RoundToInt(currentBattery) + "%";
         }
     }
-    
-    void OnDrawGizmosSelected()
+
+    public bool IsBatteryEmpty()
     {
-        if (groundCheck != null)
-        {
-            Gizmos.color = Color.red;
-            Gizmos.DrawWireSphere(groundCheck.position, groundDistance);
-        }
+        return currentBattery <= 0f;
+    }
+
+    public void RechargeBattery(float amount)
+    {
+        currentBattery += amount;
+        currentBattery = Mathf.Clamp(currentBattery, 0f, maxBattery);
     }
 }
