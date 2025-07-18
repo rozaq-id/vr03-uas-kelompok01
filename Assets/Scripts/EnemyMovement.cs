@@ -299,7 +299,7 @@ public class EnemyMovement : MonoBehaviour
         }
 
         // Check if we've reached the current patrol point
-        if (!agent.pathPending && agent.remainingDistance < 0.5f)
+        if (!agent.pathPending && agent.remainingDistance < 2f)
         {
             // Wait at patrol point for a short time (0.5-2 seconds)
             if (Random.Range(0f, 1f) < 0.1f) // 10% chance to pause and look around
