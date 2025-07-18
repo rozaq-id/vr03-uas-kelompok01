@@ -5,8 +5,7 @@ using UnityEngine;
 public class EnemyMovement : MonoBehaviour
 {
     [Header("Patrol Settings")]
-    public int numberOfPatrolPoints = 4;
-    public float patrolRadius = 10f;
+    public GameObject[] patrolPointObjects; // Reference to Point1, Point2, etc.
     private Vector3[] patrolPoints;
     private int currentPatrolIndex = 0;
 
@@ -30,8 +29,12 @@ public class EnemyMovement : MonoBehaviour
     public float pursuitRange = 25f;        // How far to pursue
     public float alertCooldown = 3f;        // Time before returning to patrol
 
+    [Header("Debug Settings")]
+    public bool showDebugInfo = true;       // Whether to show debug overlay
+    public bool logDebugMessages = true;    // Whether to log debug messages
+
     private UnityEngine.AI.NavMeshAgent agent;
-    private Transform player;
+    public Transform player;
     private float lastAttackTime;
     private float lastSightTime;            // When we last saw the player
     private Vector3 lastKnownPosition;      // Last known player position
@@ -50,12 +53,47 @@ public class EnemyMovement : MonoBehaviour
     void Start()
     {
         agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
+        if (agent == null)
+        {
+            Debug.LogError("NavMeshAgent component not found on enemy! Adding one.");
+            agent = gameObject.AddComponent<UnityEngine.AI.NavMeshAgent>();
+        }
+
+        // Make sure agent is properly configured
+        agent.baseOffset = 0; // Keep the enemy on the ground
+        agent.updateRotation = true; // Let agent update rotation
+        agent.autoTraverseOffMeshLink = true;
+        agent.avoidancePriority = 50;
+        agent.stoppingDistance = attackRange * 0.8f; // Stop slightly before attack range
+        agent.acceleration = 12f; // Faster acceleration to improve responsiveness
+        agent.angularSpeed = 200f; // Faster turning
+
+        // Make sure the enemy has a proper size for navigation
+        if (agent.radius <= 0.1f)
+        {
+            agent.radius = 0.5f;
+            if (logDebugMessages) Debug.Log("Setting NavMeshAgent radius to " + agent.radius);
+        }
+
+        // Log agent configuration
+        if (logDebugMessages)
+        {
+            Debug.Log("NavMeshAgent configured: " +
+                     "Radius: " + agent.radius +
+                     ", Height: " + agent.height +
+                     ", Stopping Distance: " + agent.stoppingDistance);
+        }
 
         // Find the player in the scene
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null)
         {
             player = playerObj.transform;
+            Debug.Log("Player found at position: " + player.position);
+        }
+        else
+        {
+            Debug.LogWarning("Player not found! Make sure it has the 'Player' tag.");
         }
 
         // Generate random patrol points
@@ -66,13 +104,47 @@ public class EnemyMovement : MonoBehaviour
         {
             agent.speed = patrolSpeed;
             agent.SetDestination(patrolPoints[currentPatrolIndex]);
+            Debug.Log("Enemy starting patrol to: " + patrolPoints[currentPatrolIndex]);
+        }
+
+        // Check if we're on the NavMesh
+        if (!agent.isOnNavMesh)
+        {
+            Debug.LogWarning("Enemy is not on NavMesh at start! Trying to recover position...");
+            TryRecoverNavMeshPosition();
+        }
+
+        // Check if player layer is set
+        if (playerLayer == 0)
+        {
+            playerLayer = LayerMask.GetMask("Player");
+            if (playerLayer == 0)
+            {
+                // Default to everything if no player layer exists
+                playerLayer = ~0;
+                Debug.LogWarning("Player layer not found. Defaulting to everything layer.");
+            }
         }
     }
 
     // Update is called once per frame
     void Update()
     {
-        if (player == null) return;
+        if (player == null)
+        {
+            // Try to find player again
+            GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
+            if (playerObj != null)
+            {
+                player = playerObj.transform;
+                if (logDebugMessages) Debug.Log("Found player at: " + player.position);
+            }
+            else
+            {
+                if (logDebugMessages) Debug.LogWarning("Player still not found!");
+                return;
+            }
+        }
 
         float distanceToPlayer = Vector3.Distance(transform.position, player.position);
         bool canSeePlayer = CanSeePlayer();
@@ -82,6 +154,15 @@ public class EnemyMovement : MonoBehaviour
         {
             lastSightTime = Time.time;
             lastKnownPosition = player.position;
+            if (logDebugMessages) Debug.Log("Updated last known position to: " + lastKnownPosition);
+        }
+
+        // Check for potential issues with NavMeshAgent
+        if (agent.isOnNavMesh == false)
+        {
+            if (logDebugMessages) Debug.LogError("Enemy is not on NavMesh! Trying to recover position...");
+            TryRecoverNavMeshPosition();
+            return;
         }
 
         // State machine logic
@@ -91,6 +172,7 @@ public class EnemyMovement : MonoBehaviour
                 Patrol();
                 if (canSeePlayer && distanceToPlayer <= detectionRange)
                 {
+                    if (logDebugMessages) Debug.Log("TRANSITION: Patrolling -> Chasing");
                     currentState = EnemyState.Chasing;
                     agent.speed = chaseSpeed;
                     alertStartTime = Time.time;
@@ -101,12 +183,14 @@ public class EnemyMovement : MonoBehaviour
                 ChasePlayer();
                 if (distanceToPlayer <= attackRange)
                 {
+                    if (logDebugMessages) Debug.Log("TRANSITION: Chasing -> Attacking");
                     currentState = EnemyState.Attacking;
                     agent.isStopped = true;
                 }
                 else if (!canSeePlayer && Time.time - lastSightTime > 1f)
                 {
                     // Lost sight, switch to pursuing
+                    if (logDebugMessages) Debug.Log("TRANSITION: Chasing -> Pursuing (lost sight)");
                     currentState = EnemyState.Pursuing;
                     agent.speed = pursuitSpeed;
                     agent.SetDestination(lastKnownPosition);
@@ -114,6 +198,7 @@ public class EnemyMovement : MonoBehaviour
                 else if (distanceToPlayer > detectionRange * 2f && Time.time - alertStartTime > alertCooldown)
                 {
                     // Return to patrol if very far and alert time expired
+                    if (logDebugMessages) Debug.Log("TRANSITION: Chasing -> Patrolling (distance too far)");
                     currentState = EnemyState.Patrolling;
                     agent.speed = patrolSpeed;
                     agent.isStopped = false;
@@ -125,17 +210,20 @@ public class EnemyMovement : MonoBehaviour
                 if (canSeePlayer && distanceToPlayer <= detectionRange)
                 {
                     // Found player again, resume chasing
+                    if (logDebugMessages) Debug.Log("TRANSITION: Pursuing -> Chasing (found player)");
                     currentState = EnemyState.Chasing;
                     agent.speed = chaseSpeed;
                 }
                 else if (distanceToPlayer <= attackRange)
                 {
+                    if (logDebugMessages) Debug.Log("TRANSITION: Pursuing -> Attacking");
                     currentState = EnemyState.Attacking;
                     agent.isStopped = true;
                 }
                 else if (Time.time - lastSightTime > pursuitTime || distanceToPlayer > pursuitRange)
                 {
                     // Give up pursuit
+                    if (logDebugMessages) Debug.Log("TRANSITION: Pursuing -> Patrolling (giving up)");
                     currentState = EnemyState.Patrolling;
                     agent.speed = patrolSpeed;
                     agent.isStopped = false;
@@ -148,11 +236,13 @@ public class EnemyMovement : MonoBehaviour
                 {
                     if (canSeePlayer)
                     {
+                        if (logDebugMessages) Debug.Log("TRANSITION: Attacking -> Chasing");
                         currentState = EnemyState.Chasing;
                         agent.speed = chaseSpeed;
                     }
                     else
                     {
+                        if (logDebugMessages) Debug.Log("TRANSITION: Attacking -> Pursuing");
                         currentState = EnemyState.Pursuing;
                         agent.speed = pursuitSpeed;
                         agent.SetDestination(lastKnownPosition);
@@ -165,7 +255,18 @@ public class EnemyMovement : MonoBehaviour
 
     void Patrol()
     {
-        if (patrolPoints.Length == 0) return;
+        if (patrolPoints == null || patrolPoints.Length == 0)
+        {
+            Debug.LogWarning("No patrol points available for patrolling");
+            return;
+        }
+
+        // Make sure agent is active
+        if (agent.isStopped)
+        {
+            agent.isStopped = false;
+            if (logDebugMessages) Debug.Log("Reactivating NavMeshAgent");
+        }
 
         // Move faster between patrol points when alert
         if (Time.time - lastSightTime < alertCooldown)
@@ -177,50 +278,169 @@ public class EnemyMovement : MonoBehaviour
             agent.speed = patrolSpeed;
         }
 
-        if (!agent.pathPending && agent.remainingDistance < 0.5f)
+        // Debug information if enabled
+        if (logDebugMessages)
         {
-            currentPatrolIndex = (currentPatrolIndex + 1) % patrolPoints.Length;
-            agent.SetDestination(patrolPoints[currentPatrolIndex]);
+            Debug.Log("Current position: " + transform.position +
+                     ", Target: " + patrolPoints[currentPatrolIndex] +
+                     ", Distance: " + agent.remainingDistance +
+                     ", Path pending: " + agent.pathPending +
+                     ", Has path: " + agent.hasPath);
         }
 
-        // Occasionally look around while patrolling
-        if (Random.Range(0f, 1f) < 0.01f) // 1% chance per frame
+        // Check if the path is invalid
+        if (agent.pathStatus == UnityEngine.AI.NavMeshPathStatus.PathInvalid ||
+            agent.pathStatus == UnityEngine.AI.NavMeshPathStatus.PathPartial)
         {
-            Vector3 lookDirection = Random.insideUnitSphere;
-            lookDirection.y = 0;
-            lookDirection.Normalize();
+            if (logDebugMessages) Debug.LogWarning("Invalid path to patrol point. Trying next point.");
+            currentPatrolIndex = (currentPatrolIndex + 1) % patrolPoints.Length;
+            agent.SetDestination(patrolPoints[currentPatrolIndex]);
+            return;
+        }
+
+        // Check if we've reached the current patrol point
+        if (!agent.pathPending && agent.remainingDistance < 0.5f)
+        {
+            // Wait at patrol point for a short time (0.5-2 seconds)
+            if (Random.Range(0f, 1f) < 0.1f) // 10% chance to pause and look around
+            {
+                StartCoroutine(LookAroundAtPatrolPoint());
+            }
+            else
+            {
+                if (logDebugMessages) Debug.Log("Reached patrol point " + currentPatrolIndex + ". Moving to next point.");
+                currentPatrolIndex = (currentPatrolIndex + 1) % patrolPoints.Length;
+                agent.SetDestination(patrolPoints[currentPatrolIndex]);
+            }
+        }
+    }
+
+    IEnumerator LookAroundAtPatrolPoint()
+    {
+        if (logDebugMessages) Debug.Log("Pausing at patrol point to look around");
+
+        // Save original speed and stop
+        float originalSpeed = agent.speed;
+        agent.isStopped = true;
+
+        float pauseTime = Random.Range(0.5f, 2f);
+        float elapsedTime = 0f;
+
+        // Look around while waiting
+        while (elapsedTime < pauseTime)
+        {
+            // Look in different directions
+            float lookAngle = Mathf.Sin(elapsedTime * 3f) * 180f;
+            Vector3 lookDirection = Quaternion.Euler(0, lookAngle, 0) * Vector3.forward;
 
             if (lookDirection != Vector3.zero)
             {
                 transform.rotation = Quaternion.Slerp(transform.rotation,
-                    Quaternion.LookRotation(lookDirection), Time.deltaTime * 2f);
+                    Quaternion.LookRotation(lookDirection), Time.deltaTime * 3f);
             }
+
+            elapsedTime += Time.deltaTime;
+            yield return null;
         }
+
+        // Resume patrol
+        agent.isStopped = false;
+        agent.speed = originalSpeed;
+        currentPatrolIndex = (currentPatrolIndex + 1) % patrolPoints.Length;
+        agent.SetDestination(patrolPoints[currentPatrolIndex]);
     }
 
     void ChasePlayer()
     {
         if (player != null)
         {
+            // Set destination to current player position for active pursuit
             agent.SetDestination(player.position);
+
+            // Make sure we're not stopped
+            if (agent.isStopped)
+            {
+                agent.isStopped = false;
+                if (logDebugMessages) Debug.Log("Re-enabling NavMeshAgent during chase");
+            }
+
+            // Look at player while chasing
+            Vector3 lookDirection = (player.position - transform.position).normalized;
+            lookDirection.y = 0; // Keep rotation only on Y axis
+            if (lookDirection != Vector3.zero)
+            {
+                transform.rotation = Quaternion.Slerp(transform.rotation,
+                    Quaternion.LookRotation(lookDirection), Time.deltaTime * 5f);
+            }
+
+            // Log chase information
+            if (logDebugMessages)
+            {
+                Debug.Log("Chasing player. Distance: " + Vector3.Distance(transform.position, player.position) +
+                         ", Path Status: " + agent.pathStatus);
+            }
+
+            // Check if path is valid, if not, try to recalculate
+            if (agent.pathStatus == UnityEngine.AI.NavMeshPathStatus.PathInvalid ||
+                agent.pathStatus == UnityEngine.AI.NavMeshPathStatus.PathPartial)
+            {
+                if (logDebugMessages) Debug.LogWarning("Invalid path to player. Recalculating...");
+                agent.ResetPath();
+                agent.SetDestination(player.position);
+            }
         }
     }
 
     void PursuePlayer()
     {
         // Move towards last known position
-        if (agent.remainingDistance < 1f)
+        if (agent.remainingDistance < 1f || agent.pathStatus == UnityEngine.AI.NavMeshPathStatus.PathInvalid)
         {
-            // Search around the last known position
-            Vector3 searchPosition = lastKnownPosition + Random.insideUnitSphere * 5f;
+            // Search around the last known position in a more systematic way
+            float searchRadius = 5f;
+            float searchAngle = (Time.time * 90f) % 360f; // Rotate search direction over time
+
+            // Calculate search position using angle for more systematic search
+            Vector3 searchDirection = new Vector3(
+                Mathf.Sin(searchAngle * Mathf.Deg2Rad),
+                0,
+                Mathf.Cos(searchAngle * Mathf.Deg2Rad)
+            );
+
+            Vector3 searchPosition = lastKnownPosition + searchDirection * searchRadius;
             searchPosition.y = transform.position.y;
 
             // Find valid position on NavMesh
             UnityEngine.AI.NavMeshHit hit;
-            if (UnityEngine.AI.NavMesh.SamplePosition(searchPosition, out hit, 5f, UnityEngine.AI.NavMesh.AllAreas))
+            if (UnityEngine.AI.NavMesh.SamplePosition(searchPosition, out hit, searchRadius, UnityEngine.AI.NavMesh.AllAreas))
             {
+                if (logDebugMessages) Debug.Log("Pursuing: Searching around last known position: " + hit.position);
                 agent.SetDestination(hit.position);
+
+                // Draw debug line to search position
+                Debug.DrawLine(transform.position, hit.position, Color.magenta, 0.5f);
             }
+            else if (logDebugMessages)
+            {
+                Debug.LogWarning("Couldn't find valid pursuit position on NavMesh");
+            }
+        }
+
+        // Occasionally look around during pursuit to find player
+        if (Random.Range(0f, 1f) < 0.05f) // 5% chance per frame
+        {
+            // Look in a random direction to try to spot the player again
+            Vector3 randomLook = Random.insideUnitSphere;
+            randomLook.y = 0;
+            randomLook.Normalize();
+
+            if (randomLook != Vector3.zero)
+            {
+                transform.rotation = Quaternion.Slerp(transform.rotation,
+                    Quaternion.LookRotation(randomLook), Time.deltaTime * 3f);
+            }
+
+            if (logDebugMessages) Debug.Log("Looking around during pursuit");
         }
     }
 
@@ -261,7 +481,7 @@ public class EnemyMovement : MonoBehaviour
         }
     }
 
-    bool CanSeePlayer()
+    public bool CanSeePlayer()
     {
         if (player == null) return false;
 
@@ -270,6 +490,7 @@ public class EnemyMovement : MonoBehaviour
         // Closer detection is more reliable
         if (distanceToPlayer <= attackRange * 1.5f)
         {
+            if (logDebugMessages) Debug.Log("Enemy close to player: Auto-detecting player");
             return true; // Always detect at close range
         }
 
@@ -283,40 +504,190 @@ public class EnemyMovement : MonoBehaviour
             RaycastHit hit;
             Vector3 rayStart = transform.position + Vector3.up * 0.5f;
             Vector3 playerCenter = player.position + Vector3.up * 1f; // Aim at player's center
+            Debug.DrawRay(rayStart, (playerCenter - rayStart).normalized * detectionRange, Color.red, 0.1f);
 
             if (Physics.Raycast(rayStart, (playerCenter - rayStart).normalized, out hit, detectionRange))
             {
                 if (hit.collider.CompareTag("Player"))
                 {
+                    if (logDebugMessages) Debug.Log("Enemy can see player via raycast hit");
                     return true;
                 }
+                else if (logDebugMessages)
+                {
+                    Debug.Log("Raycast hit " + hit.collider.name + " instead of player");
+                }
             }
+            else if (logDebugMessages)
+            {
+                Debug.Log("Raycast didn't hit anything");
+            }
+        }
+        else if (logDebugMessages)
+        {
+            Debug.Log("Player outside FOV. Angle: " + angle + ", FOV: " + fieldOfView);
         }
 
         return false;
     }
 
+    private void TryRecoverNavMeshPosition()
+    {
+        // Try to find a nearby valid NavMesh position
+        UnityEngine.AI.NavMeshHit hit;
+        if (UnityEngine.AI.NavMesh.SamplePosition(transform.position, out hit, 5f, UnityEngine.AI.NavMesh.AllAreas))
+        {
+            transform.position = hit.position;
+            if (logDebugMessages) Debug.Log("Successfully recovered NavMesh position");
+        }
+        else
+        {
+            if (logDebugMessages) Debug.LogError("Failed to find valid NavMesh position nearby!");
+        }
+    }
+
     void GenerateRandomPatrolPoints()
     {
-        patrolPoints = new Vector3[numberOfPatrolPoints];
-        Vector3 startPosition = transform.position;
-
-        for (int i = 0; i < numberOfPatrolPoints; i++)
+        // Find patrol point GameObjects if not assigned
+        if (patrolPointObjects == null || patrolPointObjects.Length == 0)
         {
-            Vector3 randomDirection = Random.insideUnitSphere * patrolRadius;
-            randomDirection += startPosition;
-            randomDirection.y = startPosition.y; // Keep same Y level
+            // Try to find the point1 through point5 objects in the scene
+            GameObject point1 = GameObject.Find("Point1");
+            GameObject point2 = GameObject.Find("Point2");
+            GameObject point3 = GameObject.Find("Point3");
+            GameObject point4 = GameObject.Find("Point4");
+            GameObject point5 = GameObject.Find("Point5");
 
-            // Try to find a valid position on the NavMesh
-            UnityEngine.AI.NavMeshHit hit;
-            if (UnityEngine.AI.NavMesh.SamplePosition(randomDirection, out hit, patrolRadius, UnityEngine.AI.NavMesh.AllAreas))
+            // Create a list of all found points
+            List<GameObject> foundPoints = new List<GameObject>();
+            if (point1 != null) foundPoints.Add(point1);
+            if (point2 != null) foundPoints.Add(point2);
+            if (point3 != null) foundPoints.Add(point3);
+            if (point4 != null) foundPoints.Add(point4);
+            if (point5 != null) foundPoints.Add(point5);
+
+            // If no points were found, create random patrol points
+            if (foundPoints.Count == 0)
             {
-                patrolPoints[i] = hit.position;
+                Debug.Log("No patrol points found in scene. Creating random patrol points.");
+                foundPoints = CreateRandomPatrolPoints();
+            }
+
+            // Assign the found points to the patrolPointObjects array
+            patrolPointObjects = foundPoints.ToArray();
+        }
+
+        // Check if we have patrol points
+        if (patrolPointObjects.Length > 0)
+        {
+            // Create the patrol points array from the positions of the GameObjects
+            patrolPoints = new Vector3[patrolPointObjects.Length];
+            for (int i = 0; i < patrolPointObjects.Length; i++)
+            {
+                if (patrolPointObjects[i] != null)
+                {
+                    patrolPoints[i] = patrolPointObjects[i].transform.position;
+                }
+                else
+                {
+                    // Use current position as fallback if point is null
+                    patrolPoints[i] = transform.position;
+                }
+            }
+        }
+        else
+        {
+            // Fallback: If no patrol points are found, just use the current position
+            Debug.LogWarning("No patrol points found. Enemy will stay at the current position.");
+            patrolPoints = new Vector3[1];
+            patrolPoints[0] = transform.position;
+        }
+    }
+
+    private List<GameObject> CreateRandomPatrolPoints()
+    {
+        List<GameObject> points = new List<GameObject>();
+        int numPoints = Random.Range(3, 6); // Create 3-5 random points
+
+        for (int i = 0; i < numPoints; i++)
+        {
+            // Create a new GameObject for each patrol point
+            GameObject pointObj = new GameObject("PatrolPoint_" + i);
+
+            // Position the point randomly within a radius around the enemy
+            float radius = Random.Range(5f, 15f);
+            float angle = Random.Range(0f, 360f) * Mathf.Deg2Rad;
+            float x = transform.position.x + radius * Mathf.Cos(angle);
+            float z = transform.position.z + radius * Mathf.Sin(angle);
+
+            // Find a valid position on the NavMesh
+            UnityEngine.AI.NavMeshHit hit;
+            Vector3 randomPos = new Vector3(x, transform.position.y, z);
+            if (UnityEngine.AI.NavMesh.SamplePosition(randomPos, out hit, radius, UnityEngine.AI.NavMesh.AllAreas))
+            {
+                pointObj.transform.position = hit.position;
             }
             else
             {
-                // If no valid NavMesh position found, use the original position
-                patrolPoints[i] = startPosition;
+                // If no valid NavMesh position found, use the original calculated position
+                pointObj.transform.position = randomPos;
+            }
+
+            // Add to the list
+            points.Add(pointObj);
+
+            // Make points visible in the scene
+            // You could add a small sphere or other visual indicator here if needed
+        }
+
+        return points;
+    }
+
+    // Display the current state of the enemy as a text in the game view
+    void OnGUI()
+    {
+        // Display state information if enabled
+        if (showDebugInfo && Camera.main != null)
+        {
+            // Position the text directly above the enemy's head
+            Vector3 worldPosition = transform.position + Vector3.up * 2f;
+            Vector3 screenPos = Camera.main.WorldToScreenPoint(worldPosition);
+
+            // Only show GUI if enemy is in front of the camera
+            if (screenPos.z > 0)
+            {
+                // Convert to GUI coordinates (invert y)
+                screenPos.y = Screen.height - screenPos.y;
+
+                // Calculate width based on text length
+                int width = 200;
+
+                // Set up styles for better visibility
+                GUIStyle style = new GUIStyle(GUI.skin.label);
+                style.normal.textColor = Color.red;
+                style.fontStyle = FontStyle.Bold;
+                style.alignment = TextAnchor.MiddleCenter;
+                style.fontSize = 14;
+
+                // Add background for better readability
+                Rect backgroundRect = new Rect(screenPos.x - width / 2, screenPos.y - 10, width, 100);
+                GUI.color = new Color(0, 0, 0, 0.5f); // Semi-transparent black
+                GUI.Box(backgroundRect, "");
+
+                // Display enemy info
+                GUI.color = Color.red;
+                string stateText = "State: " + currentState.ToString();
+                string distanceText = player != null ? "Distance: " + Vector3.Distance(transform.position, player.position).ToString("F1") : "No Player";
+                string seePlayerText = "Can See Player: " + CanSeePlayer().ToString();
+                string destinationText = "Dest: " + (agent.hasPath ? agent.destination.ToString("F1") : "No Path");
+                string agentInfoText = "Speed: " + agent.speed.ToString("F1") + " | Stopped: " + agent.isStopped;
+
+                // Draw labels centered above enemy
+                GUI.Label(new Rect(screenPos.x - width / 2, screenPos.y, width, 20), stateText, style);
+                GUI.Label(new Rect(screenPos.x - width / 2, screenPos.y + 20, width, 20), distanceText, style);
+                GUI.Label(new Rect(screenPos.x - width / 2, screenPos.y + 40, width, 20), seePlayerText, style);
+                GUI.Label(new Rect(screenPos.x - width / 2, screenPos.y + 60, width, 20), destinationText, style);
+                GUI.Label(new Rect(screenPos.x - width / 2, screenPos.y + 80, width, 20), agentInfoText, style);
             }
         }
     }
@@ -372,9 +743,5 @@ public class EnemyMovement : MonoBehaviour
                 }
             }
         }
-
-        // Patrol radius
-        Gizmos.color = Color.cyan;
-        Gizmos.DrawWireSphere(transform.position, patrolRadius);
     }
 }
